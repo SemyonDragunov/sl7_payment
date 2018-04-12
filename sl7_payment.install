@@ -1,0 +1,241 @@
+<?php
+
+/**
+ * @author Semyon Dragunov <sam.dragunov@gmail.com>
+ * https://github.com/SemyonDragunov
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function sl7_payment_schema() {
+
+  $schema['sl7_order'] = array(
+    'description' => 'The base table for sl7_order entities.',
+    'fields' => array(
+      'oid' => array(
+        'description' => 'Primary Key: order ID.',
+        'type' => 'serial',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+      ),
+      'uid' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 0,
+        'description' => 'The {users}.uid that owns this order; initially, this is the user that created it.',
+      ),
+      'recipient' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 0,
+        'description' => 'The {users}.uid that recipient this order.',
+      ),
+      'state' => array(
+        'type' => 'varchar',
+        'not null' => TRUE,
+        'length' => 32,
+        'description' => 'Status key.',
+      ),
+      'enroll' => array(
+        'type' => 'int',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 0,
+        'description' => 'Time of order enrolling.',
+      ),
+      'payment_type' => array(
+        'type' => 'varchar',
+        'not null' => TRUE,
+        'length' => 32,
+        'description' => 'Payment method of enroll order.',
+      ),
+      'data' => array(
+        'type' => 'blob',
+        'size' => 'big',
+        'description' => 'The special data of order.',
+        'not null' => TRUE,
+        'serialize' => TRUE,
+      ),
+      'created' => array(
+        'description' => 'The Unix timestamp when the order was created.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'changed' => array(
+        'description' => 'The Unix timestamp when the order was most recently saved.',
+        'type' => 'int',
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+    ) + entity_exportable_schema_fields(),
+    'indexes' => array(
+      'oid' => array('oid'),
+      'uid' => array('uid'),
+    ),
+    'foreign keys' => array(
+      'users' => array(
+        'table' => 'users',
+        'columns' => array('uid' => 'uid', 'recipient' => 'uid'),
+      ),
+    ),
+    'primary key' => array('oid'),
+  );
+
+  $schema['sl7_order_item'] = array(
+    'description' => 'The SL7 order table for items payment.',
+    'fields' => array(
+      'iid' => array(
+        'type' => 'serial',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'description' => 'Primary Key: Item ID.',
+      ),
+      'label' => array(
+        'type' => 'varchar',
+        'not null' => TRUE,
+        'length' => 255,
+        'description' => 'Title of item.',
+      ),
+      'quantity' => array(
+        'type' => 'numeric',
+        'size' => 'normal',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 1,
+        'precision' => 12,
+        'scale' => 6,
+        'description' => 'Quantity item.',
+      ),
+      'unit' => array(
+        'type' => 'varchar',
+        'not null' => TRUE,
+        'length' => 255,
+        'description' => 'Unit of item.',
+      ),
+      'amount' => array(
+        'type' => 'numeric',
+        'size' => 'normal',
+        'not null' => TRUE,
+        'unsigned' => TRUE,
+        'default' => 0,
+        'precision' => 12,
+        'scale' => 2,
+        'description' => 'Amount of item.'
+      ),
+    ),
+    'indexes' => array(
+      'iid' => array('iid'),
+    ),
+    'primary key' => array('iid'),
+  );
+
+  // Optional cache table for entitycache support.
+  $schema['cache_entity_sl7_order'] = drupal_get_schema_unprocessed('system', 'cache');
+  $schema['cache_entity_sl7_order']['description'] = 'Cache table used to sl7_order entity records.';
+  $schema['cache_entity_sl7_order_item'] = drupal_get_schema_unprocessed('system', 'cache');
+  $schema['cache_entity_sl7_order_item']['description'] = 'Cache table used to sl7_order_item entity records.';
+
+  return $schema;
+}
+
+function sl7_payment_install() {
+
+  // Если это Commerce, включаем модуль оплаты.
+  $status_commerce_payment = db_select('system', 's')
+    ->condition('s.type', 'module')
+    ->condition('s.name', 'commerce_payment')
+    ->fields('s', array('status'))
+    ->execute()
+    ->fetchField();
+
+  if (isset($status_commerce_payment) && $status_commerce_payment == 0) {
+    module_enable(array('commerce_payment'));
+  }
+
+  // Добавляем права.
+  user_role_grant_permissions(DRUPAL_AUTHENTICATED_RID, array('sl7_order own view'));
+
+  $field = array(
+    'field_name' => 'sl7_order_item',
+    'type' => 'entityreference',
+    'cardinality' => FIELD_CARDINALITY_UNLIMITED,
+    'locked' => TRUE,
+    'settings' => array(
+      'target_type' => 'sl7_order_item',
+      'handler_settings' => array('target_bundles' => NULL),
+    ),
+  );
+  $exists = db_query("SELECT id FROM {field_config} WHERE field_name=:field_name", array(':field_name' => $field['field_name']))->fetchField();
+  if (!$exists) {
+    field_create_field($field);
+  }
+
+  $instance = array(
+    'field_name' => 'sl7_order_item',
+    'entity_type' => 'sl7_order',
+    'bundle' => 'sl7_order',
+    'label' => 'Товары',
+    'required' => TRUE,
+    'widget' => array(
+      'weight' => '10',
+      'type' => 'inline_entity_form',
+      'module' => 'inline_entity_form',
+      'active' => 1,
+      'settings' => array(
+        'fields' => array(),
+        'type_settings' => array(
+          'allow_existing' => 0,
+          'match_operator' => 'CONTAINS',
+          'delete_references' => 1,
+          'override_labels' => 1,
+          'label_singular' => 'товар',
+          'label_plural' => 'товары',
+        ),
+      ),
+    ),
+    'settings' => array(
+      'target_type' => 'sl7_order_item',
+      'handler_settings' => array('target_bundles' => NULL),
+    ),
+    'display' => array(
+      'default' => array('label' => 'above', 'type' => 'sl7_order_item_table'),
+    ),
+  );
+  $exists = db_query("SELECT id FROM {field_config_instance} WHERE field_name=:field_name AND entity_type=:entity_type AND bundle=:bundle", array(':field_name' => $instance['field_name'], ':entity_type' => $instance['entity_type'], ':bundle' => $instance['bundle']))->fetchField();
+  if (!$exists) {
+    field_create_instance($instance);
+  }
+
+  // Fix bug #1387268
+  if (!db_table_exists('cache_entity_profile2')) {
+    $schema = drupal_get_schema_unprocessed('system', 'cache');
+    $schema['description'] = "Cache table used to store profile2 entity records.";
+    db_create_table('cache_entity_profile2', $schema);
+  }
+}
+
+function sl7_payment_uninstall() {
+  // Удаление полей от sl7_order
+  field_attach_delete_bundle('sl7_order', 'sl7_order');
+  db_delete('field_config_instance')->condition('entity_type', 'sl7_order')->execute();
+  db_delete('field_config')->condition('field_name', 'sl7_order_%', 'LIKE')->execute();
+
+
+  // Удаление views
+  if ($view = views_get_view('sl7_order')) {
+    $view->delete();
+  }
+
+  $result = db_select('variable', 'v')
+    ->fields('v', array('name'))
+    ->condition('name', 'sl7_payment_%', 'LIKE')
+    ->execute();
+
+  foreach ($result as $row) {
+    variable_del($row->name);
+  }
+}

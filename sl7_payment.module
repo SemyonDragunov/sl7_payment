@@ -1,0 +1,440 @@
+<?php
+
+/**
+ * @file
+ * SL7 Payment module.
+ * 
+ * @author Semyon Dragunov <sam.dragunov@gmail.com>
+ * https://github.com/SemyonDragunov
+ *
+ * @todo Рассмотреть использование profile2 для информации плательщика.
+ */
+
+define('SL7_PAYMENT_ADMIN_PATH', SL7_CONTROL_PANEL_ADMIN_PATH . '/payment');
+define('SL7_ORDER_PATH', SL7_PAYMENT_ADMIN_PATH . '/manage');
+
+require_once(__DIR__ . '/includes/sl7_order.api.inc');
+require_once(__DIR__ . '/includes/sl7_payment.api.inc');
+require_once(__DIR__ . '/includes/sl7_payment.forms.inc');
+
+/**
+ * Implements hook_menu().
+ */
+function sl7_payment_menu() {
+
+  $items[SL7_PAYMENT_ADMIN_PATH] = array(
+    'title' => 'Платежи',
+    'position' => 'right',
+    'page callback' => 'system_admin_menu_block_page',
+    'access callback' => 'sl7_order_access',
+    'access arguments' => array('view'),
+    'file path' => drupal_get_path('module', 'system'),
+    'file' => 'system.admin.inc',
+  );
+
+  $items[SL7_PAYMENT_ADMIN_PATH . '/manage'] = array(
+    'title' => 'Управление платежами',
+    'description' => 'Просмотр и управление платежами.',
+    'page callback' => 'views_embed_view',
+    'page arguments' => array('sl7_order', 'manage_page'),
+    'access arguments' => array('sl7_order any view'),
+    'weight' => -20,
+  );
+
+  $items[SL7_PAYMENT_ADMIN_PATH . '/method-access'] = array(
+    'title' => 'Доступ методов оплаты',
+    'description' => 'Настройка отображения методов оплаты.',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('sl7_payment_method_access_form'),
+    'access arguments' => array('administer sl7_payment'),
+    'weight' => -9,
+  );
+
+  $items['payment/pay'] = array(
+    'title' => 'Оплата',
+    'page callback' => 'drupal_get_form',
+    'page arguments' => array('sl7_payment_form'),
+    'access callback' => TRUE,
+    'type' => MENU_CALLBACK,
+  );
+
+  $items['user/%user/payment'] = array(
+    'title' => 'Платежи',
+    'description' => 'Все платежи пользователя.',
+    'page callback' => 'views_embed_view',
+    'page arguments' => array('sl7_order', 'user_page'),
+    'access callback' => 'sl7_order_access_user_page',
+    'access arguments' => array(1),
+    'type' => MENU_LOCAL_TASK,
+  );
+
+  return $items;
+}
+
+/**
+ * Implement hook_entity_info().
+ */
+function sl7_payment_entity_info() {
+
+  $return['sl7_order'] = array(
+    'label' => 'Платеж',
+    'entity class' => 'SL7Order',
+    'controller class' => 'SL7OrderController',
+    'metadata controller class' => 'SL7OrderMetadataController',
+    'extra fields controller class' => 'SL7OrderExtraFieldsController',
+    'views controller class' => 'SL7OrderViewsController',
+    'base table' => 'sl7_order',
+    'fieldable' => TRUE,
+    'exportable' => TRUE,
+    'static cache' => TRUE,
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'sl7_order_uri',
+    'creation callback' => 'sl7_order_create',
+    'access callback' => 'sl7_order_access',
+    'load hook' => 'sl7_order_load',
+    'module' => 'sl7_payment',
+    'entity keys' => array(
+      'id' => 'oid',
+    ),
+    'admin ui' => array(
+      'path' => SL7_ORDER_PATH,
+      'file' => 'includes/sl7_order.ui.inc',
+      'controller class' => 'SL7OrderUIController',
+      'menu wildcard' => '%sl7_order',
+    ),
+    'bundles' => array(
+      'sl7_order' => array(
+        'label' => 'Платеж',
+        'admin' => array(
+          'path' => SL7_ORDER_PATH,
+          'access callback' => 'user_access',
+          'access arguments' => array('administer sl7_payment'),
+        ),
+      ),
+    ),
+  );
+
+  $return['sl7_order_item'] = array(
+    'label' => 'Товар из платежа',
+    'entity class' => 'SL7OrderItem',
+    'controller class' => 'SL7OrderItemController',
+    'extra fields controller class' => 'SL7OrderItemExtraFieldsController',
+    'base table' => 'sl7_order_item',
+    'fieldable' => TRUE,
+    'static cache' => TRUE,
+    'label callback' => 'entity_class_label',
+    'uri callback' => 'entity_class_uri',
+    'creation callback' => 'sl7_order_item_create',
+    'access callback' => 'sl7_order_access',
+    'module' => 'sl7_payment',
+    'entity keys' => array(
+      'id' => 'iid',
+      'label' => 'label',
+    ),
+    'inline entity form' => array(
+      'controller' => 'SL7OrderItemInlineEntityFormController',
+      'file' => 'includes/sl7_order_item.controller.inc',
+    ),
+  );
+
+  if (module_exists('entitycache')) {
+    $return['sl7_order']['field cache'] = FALSE;
+    $return['sl7_order']['entity cache'] = TRUE;
+    $return['sl7_order_item']['field cache'] = FALSE;
+    $return['sl7_order_item']['entity cache'] = TRUE;
+  }
+
+  return $return;
+}
+
+/**
+ * Implements hook_flush_caches().
+ */
+function sl7_payment_flush_caches() {
+  return array(
+    'cache_entity_sl7_order',
+    'cache_entity_sl7_order_item',
+  );
+}
+
+/**
+ * Implements hook_permission().
+ */
+function sl7_payment_permission() {
+  return array(
+    'administer sl7_payment' => array('title' => 'Администрирование платежей'),
+    'sl7_order any view' => array('title' => 'Просмотр всех платежей'),
+    'sl7_order own view' => array('title' => 'Просмотр своих платежей'),
+    'sl7_order recipient view' => array('title' => 'Просмотр платежей, предназначенных себе.'),
+    'sl7_order create' => array('title' => 'Создание платежей'),
+    'sl7_order edit' => array('title' => 'Изменение платежей'),
+    'sl7_order delete' => array('title' => 'Удаление платежей'),
+    'sl7_order enroll' => array('title' => 'Зачисление платежей'),
+  );
+}
+
+function sl7_payment_method_access_form($form, &$form_state) {
+
+  $form['description'] = array(
+    '#markup' => '<p>Отмеченные методы оплаты будут доступны пользователям для выбора.<br />
+Не отмеченные же методы, будет доступны только для администратора.</p>',
+  );
+
+  $header = array(
+    'title' => 'Метод',
+  );
+
+  $options = array();
+  $methods = sl7_payment_get_type();
+  foreach ($methods as $name => $title) {
+    $options[$name] = array(
+      'title' => $title,
+    );
+  }
+
+  $default_values = variable_get('sl7_payment_method_access');
+
+  $form['methods'] = array(
+    '#type' => 'tableselect',
+    '#header' => $header,
+    '#options' => $options,
+    '#default_value' => drupal_map_assoc($default_values),
+    '#empty' => 'Не установлено ни одного метода платежа.',
+  );
+
+  $form['actions'] = array('#type' => 'actions');
+  $form['actions']['submit'] = array(
+    '#type' => 'submit',
+    '#value' => 'Сохранить',
+  );
+
+  return $form;
+}
+
+function sl7_payment_method_access_form_submit($form, &$form_state) {
+  variable_set('sl7_payment_method_access', array_filter($form_state['values']['methods']));
+  drupal_set_message(t('The configuration options have been saved.'));
+  drupal_flush_all_caches();
+}
+
+function sl7_payment_views_api() {
+  return array(
+    'api' => 3,
+    'path' => drupal_get_path('module', 'sl7_payment') . '/views',
+  );
+}
+
+/**
+ * Implements hook_views_default_views().
+ */
+function sl7_payment_views_default_views() {
+  $files = file_scan_directory(drupal_get_path('module', 'sl7_payment'). '/views', '/.view.inc/');
+  foreach ($files as $filepath => $file) {
+    require $filepath;
+    if (isset($view)) {
+      $views[$view->name] = $view;
+    }
+  }
+
+  if ($views) {
+    return $views;
+  }
+}
+
+/**
+ * Implements hook_field_formatter_info().
+ */
+function sl7_payment_field_formatter_info() {
+  return array(
+    'sl7_order_item_table' => array(
+      'label' => 'Таблица товаров',
+      'field types' => array('entityreference'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_field_formatter_view().
+ */
+function sl7_payment_field_formatter_view($entity_type, $entity, $field, $instance, $langcode, $items, $display) {
+  $element = array();
+
+  switch ($display['type']) {
+    case 'sl7_order_item_table':
+      $order_items = entity_metadata_wrapper($entity_type, $entity);
+      $order_items = $order_items->$field['field_name']->value();
+
+      $rows = array();
+      $header = array('Наименование', 'Количество', 'Ед.', 'Цена');
+
+      foreach ($order_items as $order_item) {
+        $rows[] = array(check_plain($order_item->label), $order_item->quantity, check_plain($order_item->unit), $order_item->amount);
+      }
+
+      $element = array(
+        '#theme'  => 'table',
+        '#header' => $header,
+        '#rows'   => $rows,
+      );
+      break;
+  }
+
+  return $element;
+}
+
+/**
+ * Metadata field for sl7_order entities.
+ */
+
+function sl7_order_metadata_field_sum($order, array $options, $name, $entity_type) {
+  return sl7_order_get_sum($order);
+}
+
+function sl7_order_metadata_field_payment_type($order, array $options, $name, $entity_type) {
+  $payment_type = $order->payment_type;
+  return $name = !empty($payment_type) ? sl7_payment_get_type($payment_type) : '';
+}
+
+function sl7_order_metadata_field_state($order, array $options, $name, $entity_type) {
+  return sl7_payment_get_state($order->state);
+}
+
+function sl7_order_metadata_field_uid($order, array $options, $name, $entity_type) {
+  return user_load($order->uid);
+}
+
+function sl7_order_metadata_field_recipient($order, array $options, $name, $entity_type) {
+  return user_load($order->recipient);
+}
+
+/**
+ * From username to uid for field autocomplete.
+ */
+function sl7_order_user_name_validate($element, &$form_state, $form) {
+  $user_name = $element['#value'];
+  if ($user_name != '') {
+    if ($user = user_load_by_name($user_name)) {
+      form_set_value($element, $user->uid, $form_state);
+    }
+    else {
+      form_error($element, 'Несуществующий получатель.');
+    }
+  }
+}
+
+/**
+ * For Drupal Commerce.
+ */
+
+/**
+ * Implements hook_commerce_payment_method_info().
+ */
+function sl7_payment_commerce_payment_method_info() {
+  $payment_methods = array();
+  $payment_method_rows = sl7_payment_get_info();
+
+  foreach ($payment_method_rows as $name => $values) {
+    $payment_methods[$name] = array(
+      'base' => 'sl7_payment',
+      'title' => $values['title'],
+      'display_title' => $values['title'],
+      'short_title' => $values['title'],
+      'terminal' => TRUE,
+      'offsite' => FALSE,
+    );
+
+    if (isset($values['description'])) {
+      $payment_methods[$name]['description'] = $values['description'];
+    }
+
+    $default_values = variable_get('sl7_payment_method_access');
+    $payment_methods[$name]['active'] = isset($default_values[$name]) ? TRUE : FALSE;
+  }
+
+  return $payment_methods;
+}
+
+/**
+ * Implements Commerce Payment's CALLBACK_submit_form().
+ */
+function sl7_payment_submit_form($payment_method, $pane_values, $checkout_pane, $order) {
+  $form = array();
+  $payment_info = sl7_payment_get_info($payment_method['method_id']);
+  $payment_controller = sl7_payment_get_controller($payment_method['method_id']);
+  if (method_exists($payment_controller, 'check_customer')) {
+    $customer_form_id = $payment_info['customer'];
+    $form = call_user_func($customer_form_id);
+  }
+
+  return $form;
+}
+
+/**
+ * Payment method callback: submit form validation.
+ */
+function sl7_payment_submit_form_validate($payment_method, $pane_form, $pane_values, $order, $form_parents = array()) {
+  $payment_info = sl7_payment_get_info($payment_method['method_id']);
+  $customer_form_id = $payment_info['customer'];
+  $form_state['values'] = $pane_values;
+  if (function_exists($customer_form_id . '_validate')) {
+    call_user_func_array($customer_form_id . '_validate', array($pane_form, &$form_state));
+  }
+}
+
+/**
+ * Payment method callback: submit form submission.
+ */
+function sl7_payment_submit_form_submit($payment_method, $pane_form, $pane_values, $order, $charge) {
+  $payment_controller = sl7_payment_get_controller($payment_method['method_id']);
+  if (method_exists($payment_controller, 'checkup_customer')) {
+    foreach ($pane_values as $name => $value) {
+      $customer[$name] = $value;
+    }
+    $payment_controller->set_customer($customer);
+  }
+
+  $sl7_order = sl7_payments_commerce_create_order($payment_method, $order);
+  commerce_order_status_update($order, 'pending', FALSE, NULL, 'Выбран тип оплаты.');
+
+  if (method_exists($payment_controller, 'internal')) {
+    $payment_info = sl7_payment_get_info($payment_method['method_id']);
+    call_user_func_array($payment_info['callback'], array($sl7_order));
+  }
+}
+
+function sl7_payments_commerce_create_order($payment_method, $order) {
+  foreach ($order->commerce_line_items['und'] as $item) {
+    $line_items[] = commerce_line_item_load($item['line_item_id']);
+  }
+  foreach ($line_items as $item) {
+    $price = commerce_price_component_total($item->commerce_unit_price['und'][0], 'base_price');
+    $items[] = array(
+      'label' => $item->line_item_label,
+      'quantity' => round($item->quantity, 6),
+      'amount' => commerce_currency_amount_to_decimal($price['amount'], $price['currency_code']),
+    );
+  }
+  $values = array(
+    'recipient' => $GLOBALS['user']->uid,
+    'payment_type' => $payment_method['method_id'],
+    'data' => array(
+      'destination' => 'commerce',
+      'order_id' => $order->order_id,
+    )
+  );
+  $sl7_order = sl7_order_create($values);
+  $sl7_order->add_item_multiple($items);
+  $sl7_order->save();
+
+  return $sl7_order;
+}
+
+/**
+ * Implements hook_sl7_payment_after_enroll().
+ */
+function sl7_payment_sl7_payment_after_enroll(SL7Order $order) {
+  if ($order->data['destination'] == 'commerce') {
+    $commerce_order = commerce_order_load($order->data['order_id']);
+    commerce_order_status_update($commerce_order, 'processing', FALSE, NULL, 'Выбран тип оплаты.');
+  }
+}
