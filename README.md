@@ -2,9 +2,10 @@
 
 Система проведения и управления платежами. Можно подключить разные способы оплаты. Интегрирован с Drupal Commerce.
 
+* Отдельная страницы для оплаты
 * Подключение разных способов оплаты
 * Система hook
-* Ajax форма доя оплаты в своих модулях
+* Ajax форма для оплаты в своих модулях
 * Отслеживание всех платежей
 * Личный кабинет пользователя
 * Ручное управление платежами
@@ -29,9 +30,10 @@ Apache License 2.0
 
 System for conducting and managing payments. You can connect different payment methods. Integrated with Drupal Commerce.
 
+* Dedicated page for payment
 * Connection of different payment methods
 * The hook system
-* Ajax form for payment in its modules
+* Ajax form for payment in own modules
 * Track all payments
 * User account
 * Manual payment management
